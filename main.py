@@ -1,9 +1,12 @@
 # encoding=utf-8
 
 import os
+import numpy as np
+
+# 产出的电池的数量
 COUNT = 0
 # 工位数
-NUMBER = 50
+NUMBER = 36
 # 当前时间
 time = 0
 # 当前充放电电流差
@@ -24,23 +27,26 @@ class Battery:
     """电池类"""
     def __init__(self, index=None, flag=-1, init_current=OUT_CURRENT):
         global NUMBER, time, current, IN_CURRENT, OUT_CURRENT, CRITICAL_CURRENT, LIST, batteries
-        self.in_time = time
-        self.out_time = -1
-        self.flag = flag
-        self.power = 0.5  # todo 正态分布,3smg准则
-        self.current = init_current
         if index is None:
             LIST[LIST.index(0)] = 1
         else:
             LIST[index] = 1
+        mu = 0.5
+        sigma = 0.05 / 3
+        np.random.seed()
+        self.in_time = time
+        self.out_time = -1
+        self.flag = flag
+        self.power = np.random.normal(mu, sigma)
+        self.current = init_current
 
 
 def run():
-    global NUMBER, time, current, IN_CURRENT, OUT_CURRENT, CRITICAL_CURRENT, LIST, batteries
+    global NUMBER, time, current, IN_CURRENT, OUT_CURRENT, CRITICAL_CURRENT, LIST, batteries, COUNT
     while True:
         if time % 5 == 0:
             if len(batteries) < NUMBER:
-                add_one()
+                get_out_and_add_one()
             else:
                 # 取出一个电池，放上新的
                 get_out_and_add_one()
@@ -56,6 +62,10 @@ def run():
         time += 1
         # 时间影响电量
         change_power()
+        if COUNT % 100 == 0:
+            cal_variance()
+        if COUNT >= 3000:
+            break
 
 
 def print_status(name=None):
@@ -76,6 +86,7 @@ def print_status(name=None):
                 f.writelines(str(batteries[i].in_time)+'\t'+str(batteries[i].out_time)+'\t' +
                         str(batteries[i].flag)+'\t'+str(batteries[i].power)+'\t' +
                         str(batteries[i].current)+'\t'+str(LIST[i])+'\n')
+    print(COUNT)
 
 
 def get_out_and_add_one():
@@ -93,24 +104,37 @@ def get_out_and_add_one():
         if LIST[i] == 0:
             index = i
             break
+
     if index is None:
-        for i in range(len(LIST)):
-            if LIST[i] == 1:
-                if batteries[i].flag == 13 or batteries[i].flag == 23:
-                    if batteries[i].power < 0.5:
-                        get_out_one(i)
-                        index = i
-                        break
+        try:
+            LIST.index(0)
+        except:
+            for i in range(len(LIST)):
+                if LIST[i] == 1:
+                    if batteries[i].flag == 13 or batteries[i].flag == 23:
+                        if batteries[i].power < 0.5:
+                            get_out_one(i)
+                            index = i
+                            break
+
     # 输出一下把这东西取出来之后的状态
     print_status('_out_add')
     # 然后这个位置就换成新电池了
     # 但是先要判断一下这个电池进去之后是先放电还是先充电
-    if current < CRITICAL_CURRENT:
-        batteries[index] = Battery(index, 21)  # 放电
-    elif current > IN_CURRENT:
-        batteries[index] = Battery(index, 11, IN_CURRENT)  # 充电
+    if index is None or index >= len(batteries):
+        if current < CRITICAL_CURRENT:
+            batteries.append(Battery(flag=21))  # 放电
+        elif current > IN_CURRENT:
+            batteries.append(Battery(flag=11, init_current=IN_CURRENT))  # 充电
+        else:
+            batteries.append(Battery(flag=11, init_current=current))  # 充电
     else:
-        batteries[index] = Battery(index, 11, current)  # 充电
+        if current < CRITICAL_CURRENT:
+            batteries[index] = Battery(index, 21)  # 放电
+        elif current > IN_CURRENT:
+            batteries[index] = Battery(index, 11, IN_CURRENT)  # 充电
+        else:
+            batteries[index] = Battery(index, 11, current)  # 充电
     change_current()
 
 
@@ -147,9 +171,29 @@ def change_power():
             if batteries[i].power >= 1:
                 batteries[i].power = 1
                 batteries[i].flag += 1
+                if batteries[i].current <= 0.5:
+                    batteries[i].current = 1
+                else:
+                    batteries[i].current = 0.5
+                    change_current()
+                    if current < 0:
+                        batteries[i].current = 0.5 + current
+                    current = 0
+                # if batteries[i].flag == 14 or batteries[i].flag == 24:
+                #     break
             elif batteries[i].power <= 0:
                 batteries[i].power = 0
                 batteries[i].flag += 1
+                if batteries[i].current <= 0.5:
+                    batteries[i].current = 1
+                else:
+                    batteries[i].current = 0.5
+                    change_current()
+                    if current < 0:
+                        batteries[i].current = 0.5 + current
+                    current = 0
+                # if batteries[i].flag == 14 or batteries[i].flag == 24:
+                #     break
 
 
 def change_current():
@@ -167,6 +211,36 @@ def change_current():
         current = 0
     else:
         current = out_c - in_c
+
+
+def cal_variance():
+    global NUMBER, time, current, IN_CURRENT, OUT_CURRENT, CRITICAL_CURRENT, LIST, batteries
+    location = []
+    for i in range(len(LIST)):
+        if LIST[i] == 1:
+            if batteries[i].flag == 12 or batteries[i].flag == 21 or batteries[i].flag == 23:
+                location.append(i)
+    distance = []
+    for i in range(len(location)):
+        if i < len(location)-1:
+            temp = abs(location[i] - location[i+1])
+        elif i == len(location) - 1:
+            temp = abs(location[i] - location[0])
+
+        if temp > NUMBER / 2:
+            distance.append(NUMBER - temp)
+        else:
+            distance.append(temp)
+    mean = sum(distance) / len(distance)
+    sum_t = 0
+    for i in range(len(distance)):
+        sum_t += (mean - distance[i])*(mean - distance[i])
+    variance = sum_t / len(distance)
+    if not os.path.isdir('data'):
+        os.mkdir('data')
+    with open('data\\'+'variance.txt','a',encoding='utf-8') as f:
+        f.writelines(str(time)+'\t'+str(variance)+'\n')
+
 
 
 if __name__ == "__main__":
